@@ -65,6 +65,18 @@
       <artifactId>debezium-connector-sqlserver</artifactId>
       <version>${version.debezium}</version>
     </dependency>
+    <dependency>
+      <groupId>io.debezium</groupId>
+      <artifactId>debezium-connector-oracle</artifactId>
+      <version>${version.debezium}</version>
+    </dependency>
+
+    <!-- Oracle JDBC Driver (required for Debezium Oracle connector). Ensure licensing compliance. -->
+    <dependency>
+      <groupId>com.oracle.database.jdbc</groupId>
+      <artifactId>ojdbc11</artifactId>
+      <version>23.5.0.24.07</version>
+    </dependency>
 
     <dependency>
       <groupId>com.azure</groupId>

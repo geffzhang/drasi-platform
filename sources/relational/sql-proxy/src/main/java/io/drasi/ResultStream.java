@@ -92,6 +92,26 @@ public class ResultStream implements BootstrapStream {
                 propsSQL.setProperty("authentication", SourceProxy.GetConfigValue("authentication", "NotSpecified"));
 
                 return DriverManager.getConnection("jdbc:sqlserver://"  + SourceProxy.GetConfigValue("host") + ":" + SourceProxy.GetConfigValue("port") + ";databaseName=" + SourceProxy.GetConfigValue("database"), propsSQL);
+            case "Oracle":
+                var propsOracle = new Properties();
+                propsOracle.setProperty("user", SourceProxy.GetConfigValue("user"));
+                propsOracle.setProperty("password", SourceProxy.GetConfigValue("password"));
+                
+                // Oracle JDBC URL format: jdbc:oracle:thin:@host:port:SID
+                // or jdbc:oracle:thin:@//host:port/service_name
+                String connectionFormat = SourceProxy.GetConfigValue("connectionFormat", "SID");
+                String jdbcUrl;
+                
+                if ("SERVICE".equalsIgnoreCase(connectionFormat)) {
+                    jdbcUrl = "jdbc:oracle:thin:@//" + SourceProxy.GetConfigValue("host") + ":" + 
+                              SourceProxy.GetConfigValue("port") + "/" + SourceProxy.GetConfigValue("database");
+                } else {
+                    // Default to SID format
+                    jdbcUrl = "jdbc:oracle:thin:@" + SourceProxy.GetConfigValue("host") + ":" + 
+                              SourceProxy.GetConfigValue("port") + ":" + SourceProxy.GetConfigValue("database");
+                }
+                
+                return DriverManager.getConnection(jdbcUrl, propsOracle);
             default:
                 throw new IllegalArgumentException("Unknown connector");
         }
@@ -102,9 +122,32 @@ public class ResultStream implements BootstrapStream {
         var result = new ArrayList<String>();
         try {
             DatabaseMetaData metaData = connection.getMetaData();
+            String connector = SourceProxy.GetConfigValue("connector");
+            
             request.getNodeLabels().forEach(table -> {
                 try {
-                    ResultSet tables = metaData.getTables(null, null, table, new String[]{"TABLE"});
+                    ResultSet tables;
+                    
+                    if (connector.equalsIgnoreCase("Oracle")) {
+                        // For Oracle, handle schema.table format and uppercase table names
+                        String schemaPattern = null;
+                        String tableNamePattern = table;
+                        
+                        if (table.contains(".")) {
+                            String[] parts = table.split("\\.");
+                            schemaPattern = parts[0];
+                            tableNamePattern = parts[1];
+                        } else {
+                            // In Oracle, if no schema is specified, use the current user's schema
+                            schemaPattern = SourceProxy.GetConfigValue("user").toUpperCase();
+                        }
+                        
+                        // Oracle table names are typically stored in uppercase
+                        tables = metaData.getTables(null, schemaPattern, tableNamePattern.toUpperCase(), new String[]{"TABLE"});
+                    } else {
+                        tables = metaData.getTables(null, null, table, new String[]{"TABLE"});
+                    }
+                    
                     if (!tables.next()) {
                         result.add("Table " + table + " not found");
                     }
@@ -112,7 +155,6 @@ public class ResultStream implements BootstrapStream {
                     result.add(e.getMessage());
                 }
             });
-
         }
         catch (SQLException e) {
             return List.of(e.getMessage());

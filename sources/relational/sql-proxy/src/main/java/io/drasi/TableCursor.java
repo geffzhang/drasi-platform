@@ -31,9 +31,31 @@ class TableCursor {
             mapping = ReadMappingFromSchema(tableName, connection);
             var statement = connection.createStatement();
 
-            String quote = SourceProxy.GetConfigValue("connector").equalsIgnoreCase("MySQL") ? "`" : "\"";
+            String connector = SourceProxy.GetConfigValue("connector");
+            String quote;
+            if (connector.equalsIgnoreCase("MySQL")) {
+                quote = "`";
+            } else if (connector.equalsIgnoreCase("Oracle")) {
+                quote = "\"";
+            } else {
+                quote = "\"";
+            }
             var sanitizedTableName = tableName.replace(quote, "").replace(";", "");
-            resultSet = statement.executeQuery("SELECT * FROM " + quote + sanitizedTableName + quote);
+            
+            // Oracle specific handling for table names
+            if (connector.equalsIgnoreCase("Oracle")) {
+                // For Oracle, we need to handle schema.table format
+                if (sanitizedTableName.contains(".")) {
+                    String[] parts = sanitizedTableName.split("\\.");
+                    String schema = parts[0];
+                    String table = parts[1];
+                    resultSet = statement.executeQuery("SELECT * FROM " + quote + schema + quote + "." + quote + table + quote);
+                } else {
+                    resultSet = statement.executeQuery("SELECT * FROM " + quote + sanitizedTableName + quote);
+                }
+            } else {
+                resultSet = statement.executeQuery("SELECT * FROM " + quote + sanitizedTableName + quote);
+            }
             metaData = resultSet.getMetaData();
             columnCount = metaData.getColumnCount();
         }
@@ -93,11 +115,31 @@ class TableCursor {
             tableName = tableComps[1];
         }
 
-        var rs = metadata.getPrimaryKeys(null, schemaName, tableName);
+        String connector = SourceProxy.GetConfigValue("connector");
+        ResultSet rs;
+        
+        // Oracle requires special handling for schema names
+        if (connector.equalsIgnoreCase("Oracle")) {
+            // In Oracle, schema name is typically the user name (in uppercase)
+            if (schemaName == null) {
+                schemaName = SourceProxy.GetConfigValue("user").toUpperCase();
+            }
+            rs = metadata.getPrimaryKeys(null, schemaName, tableName.toUpperCase());
+        } else {
+            rs = metadata.getPrimaryKeys(null, schemaName, tableName);
+        }
+        
         if (!rs.next())
             throw new SQLException("No primary key found for " + table);
+        
         var mapping = new NodeMapping();
-        mapping.tableName = rs.getString("TABLE_SCHEM") + "." + tableName;
+        
+        if (connector.equalsIgnoreCase("Oracle")) {
+            // For Oracle, we need to handle schema name differently
+            mapping.tableName = (schemaName != null ? schemaName : rs.getString("TABLE_SCHEM")) + "." + tableName;
+        } else {
+            mapping.tableName = rs.getString("TABLE_SCHEM") + "." + tableName;
+        }
         mapping.keyField = rs.getString("COLUMN_NAME");
         mapping.labels = Collections.singleton(tableName);
 
@@ -164,11 +206,39 @@ class TableCursor {
                 }
                 break;
             case Types.NUMERIC:
+            case Types.DECIMAL:  // Oracle often uses DECIMAL type
                 BigDecimal bigDecimalValue = rs.getBigDecimal(columnIndex);
                 if (rs.wasNull()) {
                     output.putNull(columnName);
                 } else {
                     output.put(columnName, bigDecimalValue);
+                }
+                break;
+            case Types.DATE:  // Handle Oracle DATE type which includes time component
+                java.sql.Date dateValue = rs.getDate(columnIndex);
+                if (rs.wasNull()) {
+                    output.putNull(columnName);
+                } else {
+                    output.put(columnName, dateValue.toString());
+                }
+                break;
+            case Types.CLOB:  // Handle Oracle CLOB type
+                Clob clob = rs.getClob(columnIndex);
+                if (rs.wasNull() || clob == null) {
+                    output.putNull(columnName);
+                } else {
+                    // Read up to 32KB from CLOB to avoid excessive memory usage
+                    long length = Math.min(clob.length(), 32768);
+                    output.put(columnName, clob.getSubString(1, (int)length));
+                }
+                break;
+            case Types.BLOB:  // Handle Oracle BLOB type - convert to Base64 string
+                Blob blob = rs.getBlob(columnIndex);
+                if (rs.wasNull() || blob == null) {
+                    output.putNull(columnName);
+                } else {
+                    // For BLOBs, we'll just indicate it's binary data rather than loading it
+                    output.put(columnName, "[BINARY DATA]");
                 }
                 break;
             case Types.NULL:
