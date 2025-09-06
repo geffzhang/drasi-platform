@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
-COPY ["eventhub-proxy.csproj", "."]
-RUN dotnet restore "./eventhub-proxy.csproj"
+COPY ["kafka-proxy.csproj", "."]
+RUN dotnet restore "./kafka-proxy.csproj"
 COPY . .
 WORKDIR "/src/."
-RUN dotnet publish "eventhub-proxy.csproj" -c Release -o /app/publish
+RUN dotnet publish "kafka-proxy.csproj" -c Release -o /app/publish
 
-FROM --platform=$TARGETPLATFORM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
+FROM --platform=$TARGETPLATFORM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
 WORKDIR /app
 COPY --from=build /app/publish .
-ENTRYPOINT ["dotnet", "eventhub-proxy.dll"]
+ENTRYPOINT ["dotnet", "kafka-proxy.dll"]

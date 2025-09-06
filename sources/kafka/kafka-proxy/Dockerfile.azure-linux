@@ -14,15 +14,14 @@
 
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:8.0-azurelinux3.0 AS build
 WORKDIR /src
-COPY ["kafka-reactivator.csproj", "."]
-RUN dotnet restore "./kafka-reactivator.csproj"
+COPY ["kafka-proxy.csproj", "."]
+RUN dotnet restore "./kafka-proxy.csproj"
 COPY . .
 WORKDIR "/src/."
-RUN dotnet publish "kafka-reactivator.csproj" -c Release -o /app/publish
+RUN dotnet publish "kafka-proxy.csproj" -c Release -o /app/publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0-azurelinux3.0-distroless AS final
 WORKDIR /app
 COPY --from=build /app/publish .
 USER root
-ENTRYPOINT ["dotnet", "kafka-reactivator.dll"]
-
+ENTRYPOINT ["dotnet", "kafka-proxy.dll"]
