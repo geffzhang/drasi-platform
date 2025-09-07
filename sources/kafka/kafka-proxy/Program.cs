@@ -13,11 +13,39 @@
 // limitations under the License.
 
 using Drasi.Source.SDK;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Proxy.Services;
 
-var proxy = new SourceProxyBuilder()
+// Create the proxy builder
+var builder = new SourceProxyBuilder()
     .UseBootstrapHandler<BootstrapHandler>()
-    .ConfigureServices(services => services.AddSingleton<IEventMapper, JsonEventMapper>())    
-    .Build();
+    .ConfigureServices(services => 
+    {
+        // Register event mapper factory and mappers
+        services.AddSingleton<EventMapperFactory>();
+        services.AddTransient<JsonEventMapper>();
+        services.AddTransient<AvroEventMapper>();
+        services.AddTransient<PlainTextEventMapper>();
+        
+        // Register the appropriate mapper based on configuration
+        services.AddTransient<IEventMapper>(sp => 
+        {
+            var factory = sp.GetRequiredService<EventMapperFactory>();
+            var configuration = sp.GetRequiredService<IConfiguration>();
+            var format = configuration.GetValue<string>("messageFormat", "json");
+            return factory.GetMapper(format);
+        });
+    });
 
+// Build and start the proxy
+var proxy = builder.Build();
+
+// Log available message formats
+var logger = proxy.Services.GetRequiredService<ILogger<EventMapperFactory>>();
+var mapperFactory = proxy.Services.GetRequiredService<EventMapperFactory>();
+var formats = string.Join(", ", mapperFactory.GetAvailableFormats());
+logger.LogInformation("Kafka proxy starting with available message formats: {Formats}", formats);
+
+// Start the proxy
 await proxy.StartAsync();

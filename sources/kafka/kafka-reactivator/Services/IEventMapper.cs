@@ -17,8 +17,22 @@ using Drasi.Source.SDK.Models;
 
 namespace Reactivator.Services
 {
-    interface IEventMapper
+    /// <summary>
+    /// Interface for mapping Kafka messages to Drasi SourceChange objects
+    /// </summary>
+    public interface IEventMapper
     {
+        /// <summary>
+        /// Maps a Kafka message to a Drasi SourceChange
+        /// </summary>
+        /// <param name="consumeResult">The Kafka message</param>
+        /// <param name="reactivatorStartNs">Timestamp when the reactivator started processing this message (nanoseconds)</param>
+        /// <returns>A SourceChange object</returns>
         Task<SourceChange> MapEventAsync(ConsumeResult<string, string> consumeResult, long reactivatorStartNs);
+        
+        /// <summary>
+        /// Gets the format supported by this mapper
+        /// </summary>
+        string Format { get; }
     }
 }

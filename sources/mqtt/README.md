@@ -28,12 +28,14 @@ The reactivator component monitors MQTT topics for real-time messages and publis
 
 ## Features
 
-- **Authentication Support**: Supports username/password authentication for secure MQTT brokers
-- **QoS Support**: Configurable Quality of Service levels
-- **JSON Message Support**: Maps JSON messages from MQTT to Drasi SourceElement format
+- **Multiple Message Format Support**: Supports JSON, plain text, and binary message formats with automatic detection
+- **Authentication Support**: Supports username/password authentication, TLS/SSL, and client certificates for secure MQTT brokers
+- **QoS Support**: Configurable Quality of Service levels (0, 1, or 2)
+- **Advanced Error Handling**: Exponential backoff retry policies, circuit breaker pattern, and dead letter handling
 - **Multi-topic Support**: Can consume from multiple MQTT topics simultaneously with wildcard support
 - **Retained Message Handling**: Support for MQTT retained messages during bootstrap
-- **Error Handling**: Robust error handling with automatic reconnection logic
+- **Monitoring and Health Checks**: Built-in health checks, metrics collection, and OpenTelemetry integration
+- **Configuration Flexibility**: Environment variable support, JSON configuration files, and hierarchical configuration
 
 ## Usage
 
@@ -57,3 +59,6 @@ Both images support multiple platform builds and deployment configurations.
 - .NET 8.0 runtime
 - MQTTnet client library v4.3.6
 - Drasi.Source.SDK v0.1.4-alpha (proxy) / v0.1.8-alpha (reactivator)
+- Polly v8.3.1 (for advanced error handling)
+- Microsoft.Extensions.Configuration v8.0.0 (for configuration management)
+- OpenTelemetry packages (for monitoring and observability)

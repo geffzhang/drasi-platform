@@ -14,10 +14,17 @@
 
 using Drasi.Source.SDK;
 using Reactivator.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 var reactivator = new ReactivatorBuilder()
     .UseChangeMonitor<ChangeMonitor>()
-    .ConfigureServices(services => services.AddSingleton<IEventMapper, JsonEventMapper>())
+    .ConfigureServices(services => 
+    {
+        services.AddSingleton<JsonEventMapper>();
+        services.AddSingleton<PlainTextEventMapper>();
+        services.AddSingleton<BinaryEventMapper>();
+        services.AddSingleton<EventMapperFactory>();
+    })
     .UseDeprovisionHandler<DeprovisionHandler>()
     .Build();
 

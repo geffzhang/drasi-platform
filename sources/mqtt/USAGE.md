@@ -1,201 +1,254 @@
-# MQTT Source Usage
+# MQTT Source Usage Guide
 
-This document describes how to use the MQTT source implementation for Drasi platform.
+This document provides detailed configuration and usage information for the MQTT source components.
 
-## Prerequisites
+## Configuration Parameters
 
-- MQTT broker (e.g., Eclipse Mosquitto, HiveMQ, AWS IoT Core, Azure IoT Hub)
-- Drasi platform running in your environment
+### Common Parameters (both proxy and reactivator)
 
-## Configuration
+#### Connection Configuration
+- `brokerHost`: MQTT broker hostname or IP address (required)
+- `brokerPort`: MQTT broker port (default: 1883)
+- `useTls`: Enable TLS/SSL encryption (default: false)
+- `tlsCertPath`: Path to client certificate file (optional)
+- `tlsKeyPath`: Path to client private key file (optional)
+- `caCertPath`: Path to CA certificate file for server validation (optional)
+- `clientId`: MQTT client identifier (default: auto-generated)
 
-### MQTT Proxy Configuration
+#### Authentication
+- `username`: MQTT username (optional)
+- `password`: MQTT password (optional)
+- `authMethod`: Authentication method (none, password, certificate)
 
-The MQTT proxy handles bootstrapping from MQTT topics. Configure using environment variables:
+#### Message Format Configuration
+- `messageFormat`: Message format (json, text, binary) - defaults to auto-detection
+- `textFieldNames`: Comma-separated field names for text parsing (default: "value")
+- `textDelimiter`: Delimiter for text message parsing (default: "\t")
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `brokerHost` | MQTT broker hostname/IP | `localhost` | Yes |
-| `brokerPort` | MQTT broker port | `1883` | No |
-| `username` | MQTT username for authentication | - | No |
-| `password` | MQTT password for authentication | - | No |
-| `clientId` | MQTT client identifier | `drasi-mqtt-proxy-{guid}` | No |
-| `retainedOnly` | Only consume retained messages during bootstrap | `true` | No |
-| `bootstrapTimeoutMs` | Timeout for bootstrap in milliseconds | `10000` | No |
+#### Performance and Error Handling
+- `maxRetryAttempts`: Maximum number of retry attempts (default: 5)
+- `retryDelayMs`: Initial retry delay in milliseconds (default: 1000)
+- `circuitBreakerThreshold`: Number of failures before opening circuit (default: 5)
+- `circuitBreakerTimeoutMs`: Circuit breaker timeout in milliseconds (default: 30000)
+- `batchSize`: Maximum number of messages to process in batch (default: 100)
+- `batchTimeoutMs`: Maximum time to wait for batch completion (default: 1000)
 
-### MQTT Reactivator Configuration
+#### Monitoring and Health Checks
+- `healthCheckPort`: Port for health check endpoint (default: 8080)
+- `metricsPort`: Port for metrics endpoint (default: 9090)
+- `enableOpenTelemetry`: Enable OpenTelemetry tracing (default: true)
+- `otelEndpoint`: OpenTelemetry collector endpoint (optional)
 
-The MQTT reactivator monitors MQTT topics for real-time changes. Configure using environment variables:
+### Proxy-Specific Parameters
+- `topics`: Comma-separated list of MQTT topics to consume during bootstrap
+- `retainedOnly`: Whether to only consume retained messages during bootstrap (default: false)
+- `bootstrapTimeoutMs`: Timeout for bootstrap operation (default: 30000)
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `brokerHost` | MQTT broker hostname/IP | `localhost` | Yes |
-| `brokerPort` | MQTT broker port | `1883` | No |
-| `username` | MQTT username for authentication | - | No |
-| `password` | MQTT password for authentication | - | No |
-| `clientId` | MQTT client identifier | `drasi-mqtt-reactivator-{guid}` | No |
-| `topics` | Comma-separated list of MQTT topics to monitor | - | Yes |
-| `qos` | Quality of Service level (0, 1, or 2) | `1` | No |
+### Reactivator-Specific Parameters
+- `topics`: Comma-separated list of MQTT topics to monitor for real-time changes
+- `qos`: Quality of Service level (0, 1, or 2) (default: 1)
+- `autoReconnect`: Enable automatic reconnection on connection loss (default: true)
+- `reconnectDelayMs`: Delay between reconnection attempts (default: 5000)
 
-## Topic Configuration
+## Environment Variables
 
-Topics are specified as node labels in the Drasi source configuration. The MQTT source supports:
+All configuration parameters can be set using environment variables with the `MQTT_` prefix:
 
-- Exact topic names: `sensor/temperature`
-- MQTT wildcards: `sensor/+/temperature`, `sensor/#`
-
-## Example Deployment
-
-### Using Kubernetes
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mqtt-source-proxy
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mqtt-source-proxy
-  template:
-    metadata:
-      labels:
-        app: mqtt-source-proxy
-    spec:
-      containers:
-      - name: proxy
-        image: drasi-project/source-mqtt-proxy:latest
-        env:
-        - name: brokerHost
-          value: "mqtt-broker.example.com"
-        - name: brokerPort
-          value: "1883"
-        - name: username
-          value: "mqtt-user"
-        - name: password
-          valueFrom:
-            secretKeyRef:
-              name: mqtt-credentials
-              key: password
-        - name: retainedOnly
-          value: "true"
-        - name: bootstrapTimeoutMs
-          value: "30000"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mqtt-source-reactivator
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mqtt-source-reactivator
-  template:
-    metadata:
-      labels:
-        app: mqtt-source-reactivator
-    spec:
-      containers:
-      - name: reactivator
-        image: drasi-project/source-mqtt-reactivator:latest
-        env:
-        - name: brokerHost
-          value: "mqtt-broker.example.com"
-        - name: brokerPort
-          value: "1883"
-        - name: username
-          value: "mqtt-user"
-        - name: password
-          valueFrom:
-            secretKeyRef:
-              name: mqtt-credentials
-              key: password
-        - name: topics
-          value: "sensor/+/temperature,device/+/status"
-        - name: qos
-          value: "1"
+```bash
+export MQTT_BROKER_HOST=broker.example.com
+export MQTT_BROKER_PORT=8883
+export MQTT_USE_TLS=true
+export MQTT_USERNAME=myuser
+export MQTT_PASSWORD=mypassword
+export MQTT_MESSAGE_FORMAT=json
+export MQTT_MAX_RETRY_ATTEMPTS=10
 ```
 
-### Using Docker Compose
+## Configuration File
 
+Alternatively, you can use a JSON configuration file:
+
+```json
+{
+  "brokerHost": "broker.example.com",
+  "brokerPort": 8883,
+  "useTls": true,
+  "username": "myuser",
+  "password": "mypassword",
+  "messageFormat": "json",
+  "maxRetryAttempts": 10,
+  "healthCheckPort": 8080,
+  "topics": "sensors/+, devices/#"
+}
+```
+
+## Message Format Examples
+
+### JSON Format
+```json
+{
+  "sensorId": "sensor-001",
+  "temperature": 23.5,
+  "humidity": 45.2,
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+### Text Format (with field mapping)
+```
+sensor-001	23.5	45.2	2024-01-15T10:30:00Z
+```
+
+Configure with:
+```bash
+export MQTT_MESSAGE_FORMAT=text
+export MQTT_TEXT_FIELD_NAMES=sensorId,temperature,humidity,timestamp
+export MQTT_TEXT_DELIMITER="\t"
+```
+
+### Binary Format
+Binary messages will include metadata about the message size and optional base64 encoding for debugging.
+
+## Health Checks
+
+The components expose health check endpoints:
+
+- **Health**: `http://localhost:8080/health`
+- **Metrics**: `http://localhost:9090/metrics`
+- **Ready**: `http://localhost:8080/ready`
+
+## Monitoring and Observability
+
+### Metrics
+- `mqtt_messages_received_total`: Total messages received
+- `mqtt_messages_processed_total`: Total messages processed successfully
+- `mqtt_message_processing_duration_seconds`: Message processing duration histogram
+- `mqtt_errors_total`: Total processing errors by type
+- `mqtt_connection_status`: MQTT broker connection status
+
+### Tracing
+OpenTelemetry traces are automatically generated for:
+- Message processing
+- MQTT connection events
+- Error handling and retries
+
+## Error Handling
+
+The implementation includes comprehensive error handling:
+
+1. **Retry Policy**: Exponential backoff with configurable attempts and delays
+2. **Circuit Breaker**: Prevents cascading failures when downstream services are unavailable
+3. **Dead Letter Handling**: Failed messages can be routed to a dead letter topic
+4. **Connection Recovery**: Automatic reconnection with configurable delays
+
+## Security
+
+### TLS/SSL Encryption
+```bash
+export MQTT_USE_TLS=true
+export MQTT_CA_CERT_PATH=/certs/ca.crt
+export MQTT_TLS_CERT_PATH=/certs/client.crt
+export MQTT_TLS_KEY_PATH=/certs/client.key
+```
+
+### Authentication Methods
+- Password authentication (username/password)
+- Client certificate authentication
+- Anonymous access (not recommended for production)
+
+## Performance Tuning
+
+### Batch Processing
+```bash
+export MQTT_BATCH_SIZE=500
+export MQTT_BATCH_TIMEOUT_MS=2000
+```
+
+### Connection Pooling
+```bash
+export MQTT_MAX_CONNECTIONS=10
+export MQTT_CONNECTION_TIMEOUT_MS=5000
+```
+
+## Deployment Examples
+
+### Docker Compose
 ```yaml
 version: '3.8'
 services:
   mqtt-proxy:
     image: drasi-project/source-mqtt-proxy:latest
     environment:
-      - brokerHost=mqtt-broker
-      - brokerPort=1883
-      - username=mqtt-user
-      - password=mqtt-password
-      - retainedOnly=true
-      - bootstrapTimeoutMs=30000
-    depends_on:
-      - mqtt-broker
+      - MQTT_BROKER_HOST=mosquitto
+      - MQTT_BROKER_PORT=1883
+      - MQTT_TOPICS=sensors/+,devices/#
+      - MQTT_MESSAGE_FORMAT=json
+    ports:
+      - "8080:8080"
+      - "9090:9090"
 
   mqtt-reactivator:
     image: drasi-project/source-mqtt-reactivator:latest
     environment:
-      - brokerHost=mqtt-broker
-      - brokerPort=1883
-      - username=mqtt-user
-      - password=mqtt-password
-      - topics=sensor/+/temperature,device/+/status
-      - qos=1
-    depends_on:
-      - mqtt-broker
-
-  mqtt-broker:
-    image: eclipse-mosquitto:latest
+      - MQTT_BROKER_HOST=mosquitto
+      - MQTT_BROKER_PORT=1883
+      - MQTT_TOPICS=sensors/+,devices/#
+      - MQTT_QOS=1
     ports:
-      - "1883:1883"
-    volumes:
-      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - "8081:8080"
+      - "9091:9090"
 ```
 
-## Message Format
-
-The MQTT source expects JSON messages on subscribed topics. Messages that are not valid JSON will be wrapped in a simple object:
-
-```json
-{
-  "payload": "original-message-content",
-  "topic": "sensor/temperature",
-  "timestamp": "2024-01-01T12:00:00.000Z"
-}
+### Kubernetes Deployment
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mqtt-reactivator
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: mqtt-reactivator
+        image: drasi-project/source-mqtt-reactivator:latest
+        env:
+        - name: MQTT_BROKER_HOST
+          value: "mqtt-broker"
+        - name: MQTT_BROKER_PORT
+          value: "1883"
+        - name: MQTT_TOPICS
+          value: "sensors/+,devices/#"
+        ports:
+        - containerPort: 8080
+        - containerPort: 9090
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
 ```
-
-Valid JSON messages are passed through directly as SourceElement properties.
-
-## Security Considerations
-
-- Use username/password authentication when connecting to MQTT brokers
-- Consider using TLS/SSL connections (port 8883) for production deployments
-- Implement proper MQTT topic permissions on the broker side
-- Use strong, unique client IDs to avoid conflicts
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Connection refused**: Check broker host, port, and network connectivity
-2. **Authentication failed**: Verify username and password
-3. **No messages received**: Check topic subscription and message publication
-4. **Client ID conflicts**: Ensure unique client IDs across deployments
+1. **Connection Timeouts**: Check network connectivity and firewall rules
+2. **Authentication Failures**: Verify credentials and certificate validity
+3. **Message Processing Errors**: Check message format compatibility
+4. **Memory Issues**: Adjust batch size and timeout settings
 
 ### Logging
+Enable debug logging for troubleshooting:
+```bash
+export LOG_LEVEL=Debug
+```
 
-Both proxy and reactivator provide detailed logging:
+Logs will include detailed information about:
 - Connection events
-- Subscription confirmations
 - Message processing
 - Error conditions
-- Reconnection attempts
-
-Check container logs for debugging:
-```bash
-kubectl logs deployment/mqtt-source-proxy
-kubectl logs deployment/mqtt-source-reactivator
-```
+- Performance metrics

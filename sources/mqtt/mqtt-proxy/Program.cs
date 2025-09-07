@@ -14,10 +14,17 @@
 
 using Drasi.Source.SDK;
 using Proxy.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 var proxy = new SourceProxyBuilder()
     .UseBootstrapHandler<BootstrapHandler>()
-    .ConfigureServices(services => services.AddSingleton<IEventMapper, JsonEventMapper>())    
+    .ConfigureServices(services => 
+    {
+        services.AddSingleton<JsonEventMapper>();
+        services.AddSingleton<PlainTextEventMapper>();
+        services.AddSingleton<BinaryEventMapper>();
+        services.AddSingleton<EventMapperFactory>();
+    })    
     .Build();
 
 await proxy.StartAsync();

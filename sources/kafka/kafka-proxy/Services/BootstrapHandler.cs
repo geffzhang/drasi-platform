@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Confluent.Kafka;
 using Drasi.Source.SDK;
@@ -19,44 +21,223 @@ using Drasi.Source.SDK.Models;
 
 namespace Proxy.Services
 {
-    class BootstrapHandler(IEventMapper eventMapper, IConfiguration configuration, ILogger<BootstrapHandler> logger): IBootstrapHandler
+    /// <summary>
+    /// Handles bootstrapping data from Kafka topics
+    /// </summary>
+    class BootstrapHandler : IBootstrapHandler
     {
+        private readonly EventMapperFactory _eventMapperFactory;
+        private readonly IConfiguration _configuration;
+        private readonly ILogger<BootstrapHandler> _logger;
+        private readonly int _batchSize;
+        private readonly int _maxParallelTopics;
+        private readonly int _maxMessagesPerTopic;
+        private readonly int _partitionAssignmentTimeoutMs;
+        private readonly string _messageFormat;
+
+        public BootstrapHandler(EventMapperFactory eventMapperFactory, IConfiguration configuration, ILogger<BootstrapHandler> logger)
+        {
+            _eventMapperFactory = eventMapperFactory;
+            _configuration = configuration;
+            _logger = logger;
+            _messageFormat = configuration.GetValue<string>("messageFormat", "json");
+            
+            // Get configuration values with defaults
+            _batchSize = configuration.GetValue<int>("batchSize", 100);
+            _maxParallelTopics = configuration.GetValue<int>("maxParallelTopics", 3);
+            _maxMessagesPerTopic = configuration.GetValue<int>("maxMessagesPerTopic", 10000);
+            _partitionAssignmentTimeoutMs = configuration.GetValue<int>("partitionAssignmentTimeoutMs", 10000);
+        }
+
         public async IAsyncEnumerable<SourceElement> Bootstrap(BootstrapRequest request, [EnumeratorCancellation]CancellationToken cancellationToken = default)
         {
-            var windowSize = configuration.GetValue<long>("bootstrapWindow");
-            var groupId = configuration.GetValue<string>("groupId") ?? "drasi-kafka-source";
+            var windowSize = _configuration.GetValue<long>("bootstrapWindow");
+            var groupId = _configuration.GetValue<string>("groupId") ?? "drasi-kafka-source";
 
             if (windowSize <= 0) 
             {
+                _logger.LogInformation("Bootstrap window is set to {WindowSize}, skipping bootstrap", windowSize);
                 yield break;
             }
 
-            foreach (var label in request.NodeLabels)
+            // Process topics in parallel with limited concurrency
+            var semaphore = new SemaphoreSlim(_maxParallelTopics);
+            var tasks = new List<Task<List<SourceElement>>>();
+            
+            foreach (var topic in request.NodeLabels)
             {
-                var consumer = BuildConsumer(groupId);
+                await semaphore.WaitAsync(cancellationToken);
                 
-                await foreach (var change in GetTopicData(consumer, label, windowSize, cancellationToken))
+                tasks.Add(Task.Run(async () =>
                 {
-                    yield return change;
-                }
+                    try
+                    {
+                        return await GetTopicDataBatch(topic, windowSize, cancellationToken);
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                }, cancellationToken));
+            }
+            
+            // Process results as they complete
+            while (tasks.Count > 0)
+            {
+                var completedTask = await Task.WhenAny(tasks);
+                tasks.Remove(completedTask);
                 
-                consumer.Close();
+                var elements = await completedTask;
+                foreach (var element in elements)
+                {
+                    yield return element;
+                }
             }
         }
 
+        /// <summary>
+        /// Gets data from a topic in batches
+        /// </summary>
+        private async Task<List<SourceElement>> GetTopicDataBatch(string topic, long windowSize, CancellationToken cancellationToken)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var results = new List<SourceElement>();
+            var groupId = _configuration.GetValue<string>("groupId") ?? "drasi-kafka-source";
+            
+            using var consumer = BuildConsumer(groupId);
+            
+            try
+            {
+                _logger.LogInformation("Starting bootstrap for topic {Topic} with window size {WindowSize} minutes", 
+                    topic, windowSize);
+                
+                consumer.Subscribe(topic);
+                
+                var startTime = DateTimeOffset.UtcNow.AddMinutes(-windowSize);
+                var endTime = DateTimeOffset.UtcNow;
+                
+                // Wait for partition assignment with timeout
+                var assignmentTimeout = Task.Delay(_partitionAssignmentTimeoutMs, cancellationToken);
+                while (!consumer.Assignment.Any())
+                {
+                    if (await Task.WhenAny(Task.Delay(100, cancellationToken), assignmentTimeout) == assignmentTimeout)
+                    {
+                        _logger.LogWarning("Timed out waiting for partition assignment for topic {Topic}", topic);
+                        return results;
+                    }
+                }
+                
+                var assignment = consumer.Assignment;
+                _logger.LogInformation("Assigned {PartitionCount} partitions for topic {Topic}", 
+                    assignment.Count, topic);
+                
+                // For bootstrap, we want to read from a specific time window
+                var timestampOffsets = assignment.Select(partition => 
+                    new TopicPartitionTimestamp(partition, new Timestamp(startTime))).ToList();
+                
+                var offsets = consumer.OffsetsForTimes(timestampOffsets, TimeSpan.FromSeconds(10));
+                var validOffsets = offsets.Where(o => o.Offset != Offset.Unset).ToList();
+                
+                if (!validOffsets.Any())
+                {
+                    _logger.LogInformation("No messages found in the specified time window for topic {Topic}", topic);
+                    return results;
+                }
+                
+                // Seek to calculated offsets
+                foreach (var offset in validOffsets)
+                {
+                    consumer.Seek(new TopicPartitionOffset(offset.TopicPartition, offset.Offset));
+                    _logger.LogDebug("Seeking to offset {Offset} for topic {Topic}, partition {Partition}", 
+                        offset.Offset, topic, offset.TopicPartition.Partition.Value);
+                }
+                
+                var processedMessages = 0;
+                var batch = new List<ConsumeResult<string, string>>(_batchSize);
+                
+                while (!cancellationToken.IsCancellationRequested && processedMessages < _maxMessagesPerTopic)
+                {
+                    // Consume a batch of messages
+                    batch.Clear();
+                    
+                    for (int i = 0; i < _batchSize; i++)
+                    {
+                        var consumeResult = consumer.Consume(TimeSpan.FromMilliseconds(100));
+                        if (consumeResult == null)
+                            break;
+                            
+                        // Check if message is within our time window
+                        if (consumeResult.Message.Timestamp.Type == TimestampType.CreateTime && 
+                            consumeResult.Message.Timestamp.UtcDateTime > endTime)
+                            break;
+                            
+                        batch.Add(consumeResult);
+                    }
+                    
+                    if (batch.Count == 0)
+                        break;
+                        
+                    // Process the batch in parallel
+                    var eventMapper = _eventMapperFactory.GetMapper(_messageFormat);
+                    var batchResults = await Task.WhenAll(batch.Select(async message => 
+                        await eventMapper.MapEventAsync(message)));
+                        
+                    results.AddRange(batchResults);
+                    processedMessages += batch.Count;
+                    
+                    _logger.LogDebug("Processed batch of {BatchSize} messages for topic {Topic}, total: {Total}", 
+                        batch.Count, topic, processedMessages);
+                }
+                
+                stopwatch.Stop();
+                _logger.LogInformation("Bootstrap completed for topic {Topic}, processed {Count} messages in {ElapsedMs}ms", 
+                    topic, processedMessages, stopwatch.ElapsedMilliseconds);
+                    
+                return results;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error bootstrapping data from topic {Topic}", topic);
+                return results;
+            }
+            finally
+            {
+                try
+                {
+                    consumer.Unsubscribe();
+                    consumer.Close();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error closing Kafka consumer for topic {Topic}", topic);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Builds a Kafka consumer with the configured settings
+        /// </summary>
         private IConsumer<string, string> BuildConsumer(string groupId)
         {
             var config = new ConsumerConfig
             {
                 GroupId = groupId,
-                BootstrapServers = configuration.GetValue<string>("bootstrapServers"),
+                BootstrapServers = _configuration.GetValue<string>("bootstrapServers"),
                 AutoOffsetReset = AutoOffsetReset.Earliest,
-                EnableAutoCommit = false
+                EnableAutoCommit = false,
+                // Performance tuning
+                FetchMaxBytes = _configuration.GetValue<int>("fetchMaxBytes", 1048576),
+                FetchMinBytes = _configuration.GetValue<int>("fetchMinBytes", 1),
+                FetchMaxWaitMs = _configuration.GetValue<int>("fetchMaxWaitMs", 500),
+                MaxPollIntervalMs = _configuration.GetValue<int>("maxPollIntervalMs", 300000),
+                SessionTimeoutMs = _configuration.GetValue<int>("sessionTimeoutMs", 10000),
+                // Security settings
+                SecurityProtocol = SecurityProtocol.Plaintext
             };
 
             // Add authentication if provided
-            var username = configuration.GetValue<string>("username");
-            var password = configuration.GetValue<string>("password");
+            var username = _configuration.GetValue<string>("username");
+            var password = _configuration.GetValue<string>("password");
             
             if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
             {
@@ -66,88 +247,21 @@ namespace Proxy.Services
                 config.SaslPassword = password;
             }
 
+            // Add SSL configuration if enabled
+            var useSsl = _configuration.GetValue<bool>("useSsl", false);
+            if (useSsl)
+            {
+                config.SecurityProtocol = string.IsNullOrEmpty(username) 
+                    ? SecurityProtocol.Ssl 
+                    : SecurityProtocol.SaslSsl;
+                    
+                config.SslCaLocation = _configuration.GetValue<string>("sslCaLocation");
+                config.SslCertificateLocation = _configuration.GetValue<string>("sslCertificateLocation");
+                config.SslKeyLocation = _configuration.GetValue<string>("sslKeyLocation");
+                config.SslKeyPassword = _configuration.GetValue<string>("sslKeyPassword");
+            }
+
             return new ConsumerBuilder<string, string>(config).Build();
         }
-
-        async IAsyncEnumerable<SourceElement> GetTopicData(IConsumer<string, string> consumer, string topic, long windowSize, [EnumeratorCancellation] CancellationToken stoppingToken)
-        {
-            consumer.Subscribe(topic);
-            
-            var startTime = DateTimeOffset.UtcNow.AddMinutes(-windowSize);
-            var endTime = DateTimeOffset.UtcNow;
-            var processedMessages = 0;
-
-            // Wait for partition assignment
-            await Task.Delay(2000, stoppingToken);
-            
-            var assignment = consumer.Assignment;
-            if (!assignment.Any())
-            {
-                logger.LogWarning("No partitions assigned for topic {Topic}", topic);
-                consumer.Unsubscribe();
-                yield break;
-            }
-
-            // For bootstrap, we want to read from a specific time window
-            var timestampOffsets = new List<TopicPartitionTimestamp>();
-            foreach (var partition in assignment)
-            {
-                timestampOffsets.Add(new TopicPartitionTimestamp(partition, new Timestamp(startTime)));
-            }
-
-            var offsets = consumer.OffsetsForTimes(timestampOffsets, TimeSpan.FromSeconds(10));
-            var validOffsets = offsets.Where(o => o.Offset != Offset.Unset).ToList();
-            
-            if (!validOffsets.Any())
-            {
-                logger.LogInformation("No messages found in the specified time window for topic {Topic}", topic);
-                consumer.Unsubscribe();
-                yield break;
-            }
-
-            // Seek to calculated offsets
-            foreach (var offset in validOffsets)
-            {
-                consumer.Seek(new TopicPartitionOffset(offset.TopicPartition, offset.Offset));
-            }
-
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                ConsumeResult<string, string>? consumeResult = null;
-                
-                try
-                {
-                    consumeResult = consumer.Consume(TimeSpan.FromSeconds(5));
-                }
-                catch (ConsumeException ex)
-                {
-                    logger.LogError(ex, "Error consuming message from topic {Topic}", topic);
-                    break;
-                }
-                
-                if (consumeResult == null)
-                    break;
-
-                // Check if message is within our time window
-                if (consumeResult.Message.Timestamp.Type == TimestampType.CreateTime && 
-                    consumeResult.Message.Timestamp.UtcDateTime > endTime)
-                    break;
-
-                var change = await eventMapper.MapEventAsync(consumeResult);
-                yield return change;
-                
-                processedMessages++;
-                
-                // Prevent infinite loops
-                if (processedMessages > 10000)
-                {
-                    logger.LogWarning("Processed {Count} messages, stopping bootstrap to prevent infinite loop", processedMessages);
-                    break;
-                }
-            }
-            
-            logger.LogInformation("Bootstrap completed for topic {Topic}, processed {Count} messages", topic, processedMessages);
-            consumer.Unsubscribe();
-        }       
     }
 }

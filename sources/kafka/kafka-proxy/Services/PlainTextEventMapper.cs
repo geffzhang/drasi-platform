@@ -13,34 +13,40 @@
 // limitations under the License.
 
 using System;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using Confluent.Kafka;
 using Drasi.Source.SDK.Models;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace Proxy.Services 
 {
     /// <summary>
-    /// Maps JSON messages from Kafka to Drasi SourceElement objects
+    /// Maps plain text messages from Kafka to Drasi SourceElement objects
     /// </summary>
-    public class JsonEventMapper : IEventMapper
+    public class PlainTextEventMapper : IEventMapper
     {
-        private readonly ILogger<JsonEventMapper> _logger;
-        private readonly JsonSerializerOptions _jsonOptions;
+        private readonly ILogger<PlainTextEventMapper> _logger;
+        private readonly IConfiguration _configuration;
+        private readonly string[] _fieldNames;
+        private readonly string _delimiter;
 
-        public string Format => "json";
+        public string Format => "text";
 
-        public JsonEventMapper(ILogger<JsonEventMapper> logger = null)
+        public PlainTextEventMapper(
+            ILogger<PlainTextEventMapper> logger,
+            IConfiguration configuration)
         {
             _logger = logger;
-            _jsonOptions = new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-                AllowTrailingCommas = true,
-                ReadCommentHandling = JsonCommentHandling.Skip
-            };
+            _configuration = configuration;
+            
+            // Get field names from configuration
+            var fieldNamesConfig = _configuration.GetValue<string>("textFieldNames", "value");
+            _fieldNames = fieldNamesConfig.Split(',', StringSplitOptions.TrimEntries);
+            
+            // Get delimiter from configuration
+            _delimiter = _configuration.GetValue<string>("textDelimiter", "\t");
         }
 
         public Task<SourceElement> MapEventAsync(ConsumeResult<string, string> consumeResult)
@@ -50,23 +56,40 @@ namespace Proxy.Services
                 // Generate element ID from key or fallback to topic-partition-offset
                 var elementId = consumeResult.Message.Key ?? $"{consumeResult.Topic}-{consumeResult.Partition.Value}-{consumeResult.Offset.Value}";
                 
-                // Parse JSON message
-                JsonObject jsonData;
+                // Parse text message
+                JsonObject jsonData = new JsonObject();
+                
                 try
                 {
-                    var jsonNode = JsonNode.Parse(consumeResult.Message.Value, _jsonOptions);
-                    jsonData = jsonNode?.AsObject();
+                    var messageValue = consumeResult.Message.Value;
                     
-                    if (jsonData == null)
+                    // If delimiter is specified and we have field names, try to split the message
+                    if (!string.IsNullOrEmpty(_delimiter) && _fieldNames.Length > 0)
                     {
-                        throw new JsonException("Failed to parse message as JSON object");
+                        var values = messageValue.Split(_delimiter);
+                        
+                        // Map values to field names
+                        for (int i = 0; i < Math.Min(_fieldNames.Length, values.Length); i++)
+                        {
+                            jsonData[_fieldNames[i]] = values[i];
+                        }
+                        
+                        // If we have more values than field names, add them with generic names
+                        for (int i = _fieldNames.Length; i < values.Length; i++)
+                        {
+                            jsonData[$"field{i}"] = values[i];
+                        }
+                    }
+                    else
+                    {
+                        // If no delimiter or field names, just use the raw message
+                        jsonData["value"] = messageValue;
                     }
                 }
-                catch (JsonException ex)
+                catch (Exception ex)
                 {
-                    _logger?.LogWarning(ex, "Failed to parse message as JSON for topic {Topic}, partition {Partition}, offset {Offset}. Message: {Message}", 
-                        consumeResult.Topic, consumeResult.Partition.Value, consumeResult.Offset.Value, 
-                        consumeResult.Message.Value?.Length > 100 ? consumeResult.Message.Value.Substring(0, 100) + "..." : consumeResult.Message.Value);
+                    _logger?.LogWarning(ex, "Failed to parse message as text for topic {Topic}, partition {Partition}, offset {Offset}",
+                        consumeResult.Topic, consumeResult.Partition.Value, consumeResult.Offset.Value);
                     
                     // Create a simple object with the raw message as a fallback
                     jsonData = new JsonObject
@@ -97,7 +120,7 @@ namespace Proxy.Services
             }
             catch (Exception ex)
             {
-                _logger?.LogError(ex, "Error mapping JSON event for topic {Topic}, partition {Partition}, offset {Offset}", 
+                _logger?.LogError(ex, "Error mapping text event for topic {Topic}, partition {Partition}, offset {Offset}", 
                     consumeResult.Topic, consumeResult.Partition.Value, consumeResult.Offset.Value);
                 
                 // Create a fallback object with error information

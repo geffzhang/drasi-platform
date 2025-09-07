@@ -17,8 +17,21 @@ using Drasi.Source.SDK.Models;
 
 namespace Proxy.Services
 {
-    interface IEventMapper
+    /// <summary>
+    /// Interface for mapping Kafka messages to Drasi SourceElement objects
+    /// </summary>
+    public interface IEventMapper
     {
+        /// <summary>
+        /// Maps a Kafka message to a Drasi SourceElement
+        /// </summary>
+        /// <param name="consumeResult">The Kafka message</param>
+        /// <returns>A SourceElement object</returns>
         Task<SourceElement> MapEventAsync(ConsumeResult<string, string> consumeResult);
+        
+        /// <summary>
+        /// Gets the format supported by this mapper
+        /// </summary>
+        string Format { get; }
     }
 }
